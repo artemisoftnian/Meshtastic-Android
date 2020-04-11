@@ -1,1 +1,3 @@
-../../../../../../mapbox-token.xml
+<resources>
+   <string name="mapbox_access_token" translatable="false">pk.eyJ1IjoiaGFja2luYzIwMDAiLCJhIjoiY2s4dzdidmZoMHRscTNncXNxaDI1Mmp4NiJ9.VPuoH7oT7BL1qQ37Gk4DOg</string>
+</resources>

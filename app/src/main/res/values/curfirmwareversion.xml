@@ -1,1 +1,4 @@
-../../../../../../meshtastic-esp32/release/latest/curfirmwareversion.xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cur_firmware_version" translatable="false">0.2.3</string>
+</resources>
