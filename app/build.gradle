@@ -11,13 +11,13 @@ apply plugin: 'com.google.protobuf'
 
 android {
     compileSdkVersion 29
-    buildToolsVersion "29.0.2"
+    buildToolsVersion "29.0.3"
     defaultConfig {
         applicationId "com.geeksville.mesh"
         minSdkVersion 22 // The oldest emulator image I have tried is 22 (though 21 probably works)
         targetSdkVersion 29
-        versionCode 134
-        versionName "0.3.4"
+        versionCode 137
+        versionName "0.3.7"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
@@ -116,7 +116,7 @@ dependencies {
     implementation 'com.google.protobuf:protobuf-javalite:3.11.1'
 
     // mapbox
-    implementation 'com.mapbox.mapboxsdk:mapbox-android-sdk:9.0.0'
+    implementation 'com.mapbox.mapboxsdk:mapbox-android-sdk:9.1.0'
 
     // location services
     implementation 'com.google.android.gms:play-services-location:17.0.0'
@@ -134,8 +134,9 @@ dependencies {
     // https://firebase.google.com/docs/android/setup#available-libraries
 
     // barcode support
-    // implementation('com.google.zxing:core:3.4.0')
-    implementation('com.journeyapps:zxing-android-embedded:3.6.0')
+    // per https://github.com/journeyapps/zxing-android-embedded for support of android version 22
+    implementation('com.journeyapps:zxing-android-embedded:4.1.0') { transitive = false }
+    implementation 'com.google.zxing:core:3.3.0'
 
     implementation project(':geeksville-androidlib')
 }

@@ -169,8 +169,10 @@ class MainActivity : AppCompatActivity(), Logging,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.BLUETOOTH,
             Manifest.permission.BLUETOOTH_ADMIN,
-            Manifest.permission.WAKE_LOCK,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
+            Manifest.permission.WAKE_LOCK
+
+            // We only need this for logging to capture files for the simulator - turn off for most users
+            // Manifest.permission.WRITE_EXTERNAL_STORAGE
         )
 
         if (Build.VERSION.SDK_INT >= 29) // only added later
@@ -216,6 +218,14 @@ class MainActivity : AppCompatActivity(), Logging,
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (grantResults.contains(PackageManager.PERMISSION_DENIED)) {
+            Toast.makeText(
+                this,
+                getString(R.string.permission_missing),
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
 
@@ -271,7 +281,7 @@ class MainActivity : AppCompatActivity(), Logging,
         model.ownerName.value = prefs.getString("owner", "")!!
 
         val isInTestLab = (application as GeeksvilleApplication).isInTestLab
-        
+
         // Ensures Bluetooth is available on the device and it is enabled. If not,
         // displays a dialog requesting user permission to enable Bluetooth.
         if (bluetoothAdapter != null && !isInTestLab) {
@@ -288,8 +298,8 @@ class MainActivity : AppCompatActivity(), Logging,
                 .show()
         }
 
-        if (isInTestLab)
-            requestPermission() // permissions don't work there
+        // if (!isInTestLab) - very important - even in test lab we must request permissions because we need location perms for some of our tests to pass
+        requestPermission()
 
         /*  not yet working
         // Configure sign-in to request the user's ID, email address, and basic
