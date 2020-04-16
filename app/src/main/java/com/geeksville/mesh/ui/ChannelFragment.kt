@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.os.Bundle
+import android.os.RemoteException
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,7 +19,10 @@ import com.geeksville.android.Logging
 import com.geeksville.android.hideKeyboard
 import com.geeksville.mesh.R
 import com.geeksville.mesh.model.UIViewModel
+import com.geeksville.mesh.service.MeshService
+import com.geeksville.util.Exceptions
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
 import kotlinx.android.synthetic.main.channel_fragment.*
 
 
@@ -70,7 +74,11 @@ class ChannelFragment : ScreenFragment("Channel"), Logging {
             qrView.visibility = View.VISIBLE
             channelNameEdit.visibility = View.VISIBLE
             channelNameEdit.setText(channel.name)
-            editableCheckbox.isEnabled = true
+
+            // For now, we only let the user edit/save channels while the radio is awake - because the service
+            // doesn't cache radioconfig writes.
+            val connected = model.isConnected.value == MeshService.ConnectionState.CONNECTED
+            editableCheckbox.isEnabled = connected
 
             qrView.setImageBitmap(channel.getChannelQR())
         } else {
@@ -123,12 +131,6 @@ class ChannelFragment : ScreenFragment("Channel"), Logging {
         editableCheckbox.setOnCheckedChangeListener { _, checked ->
             if (!checked) {
                 // User just locked it, we should warn and then apply changes to radio
-                /* Snackbar.make(
-                    editableCheckbox,
-                    "Changing channels is not yet supported",
-                    Snackbar.LENGTH_SHORT
-                ).show() */
-
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle(R.string.change_channel)
                     .setMessage(R.string.are_you_sure_channel)
@@ -141,8 +143,22 @@ class ChannelFragment : ScreenFragment("Channel"), Logging {
                             val newSettings = old.settings.toBuilder()
                             newSettings.name = channelNameEdit.text.toString().trim()
                             // FIXME, regenerate a new preshared key!
-                            model.setChannel(newSettings.build())
-                            // Since we are writing to radioconfig, that will trigger the rest of the GUI update (QR code etc)
+
+                            // Try to change the radio, if it fails, tell the user why and throw away their redits
+                            try {
+                                model.setChannel(newSettings.build())
+                                // Since we are writing to radioconfig, that will trigger the rest of the GUI update (QR code etc)
+                            } catch (ex: RemoteException) {
+                                setGUIfromModel() // Throw away user edits
+                                
+                                // Tell the user to try again
+                                Snackbar.make(
+                                    editableCheckbox,
+                                    R.string.radio_sleeping,
+                                    Snackbar.LENGTH_SHORT
+                                ).show()
+                                Exceptions.report(ex, "ignoring channel problem")
+                            }
                         }
                     }
                     .show()
@@ -156,91 +172,13 @@ class ChannelFragment : ScreenFragment("Channel"), Logging {
             shareChannel()
         }
 
-        model.radioConfig.observe(viewLifecycleOwner, Observer { config ->
+        model.radioConfig.observe(viewLifecycleOwner, Observer {
+            setGUIfromModel()
+        })
+
+        // If connection state changes, we might need to enable/disable buttons
+        model.isConnected.observe(viewLifecycleOwner, Observer {
             setGUIfromModel()
         })
     }
 }
-
-/*
-@Composable
-fun ChannelContent(channel: Channel?) {
-
-    val typography = MaterialTheme.typography
-    val context = ContextAmbient.current
-
-    Column(modifier = LayoutSize.Fill + LayoutPadding(16.dp)) {
-        if (channel != null) {
-            Row(modifier = LayoutGravity.Center) {
-
-                Text(text = "Channel ", modifier = LayoutGravity.Center)
-
-                if (channel.editable) {
-                    // FIXME - limit to max length
-                    StyledTextField(
-                        value = channel.name,
-                        onValueChange = { channel.name = it },
-                        textStyle = typography.h4.copy(
-                            color = palette.onSecondary.copy(alpha = 0.8f)
-                        ),
-                        imeAction = ImeAction.Done,
-                        onImeActionPerformed = {
-                            ChannelLog.errormsg("FIXME, implement channel edit button")
-                        }
-                    )
-                } else {
-                    Text(
-                        text = channel.name,
-                        style = typography.h4
-                    )
-                }
-            }
-
-            // simulated qr code
-            // val image = imageResource(id = R.drawable.qrcode)
-            val image = AndroidImage(channel.getChannelQR())
-
-            ScaledImage(
-                image = image,
-                modifier = LayoutGravity.Center + LayoutSize.Min(200.dp, 200.dp)
-            )
-
-            Text(
-                text = "Mode: ${channel.modemConfig.toHumanString()}",
-                modifier = LayoutGravity.Center + LayoutPadding(bottom = 16.dp)
-            )
-
-            Row(modifier = LayoutGravity.Center) {
-
-                OutlinedButton(onClick = {
-                    channel.editable = !channel.editable
-                }) {
-                    if (channel.editable)
-                        VectorImage(
-                            id = R.drawable.ic_twotone_lock_open_24,
-                            tint = palette.onBackground
-                        )
-                    else
-                        VectorImage(
-                            id = R.drawable.ic_twotone_lock_24,
-                            tint = palette.onBackground
-                        )
-                }
-
-                // Only show the share buttone once we are locked
-                if (!channel.editable)
-                    OutlinedButton(modifier = LayoutPadding(start = 24.dp),
-                        onClick = {
-
-                        }) {
-                        VectorImage(
-                            id = R.drawable.ic_twotone_share_24,
-                            tint = palette.onBackground
-                        )
-                    }
-            }
-        }
-    }
-}
-
-*/

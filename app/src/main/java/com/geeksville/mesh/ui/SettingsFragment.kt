@@ -27,6 +27,7 @@ import com.geeksville.mesh.R
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.service.RadioInterfaceService
 import com.geeksville.util.exceptionReporter
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.android.synthetic.main.settings_fragment.*
 
 
@@ -171,10 +172,10 @@ class BTScanModel(app: Application) : AndroidViewModel(app), Logging {
 
     /// Called by the GUI when a new device has been selected by the user
     /// Returns true if we were able to change to that item
-    fun onSelected(it: BTScanEntry): Boolean {
+    fun onSelected(activity: MainActivity, it: BTScanEntry): Boolean {
         // If the device is paired, let user select it, otherwise start the pairing flow
         if (it.bonded) {
-            changeSelection(GeeksvilleApplication.currentActivity as MainActivity, it.macAddress)
+            changeSelection(activity, it.macAddress)
             return true
         } else {
             info("Starting bonding for $it")
@@ -196,7 +197,7 @@ class BTScanModel(app: Application) : AndroidViewModel(app), Logging {
                     if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_BONDING) {
                         debug("Bonding completed, connecting service")
                         changeSelection(
-                            GeeksvilleApplication.currentActivity as MainActivity,
+                            activity,
                             it.macAddress
                         )
 
@@ -260,13 +261,32 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
             requireActivity().hideKeyboard()
         }
 
+        val app = (requireContext().applicationContext as GeeksvilleApplication)
+
         // Set analytics checkbox
-        analyticsOkayCheckbox.isChecked =
-            (requireContext().applicationContext as GeeksvilleApplication).isAnalyticsAllowed
+        analyticsOkayCheckbox.isChecked = app.isAnalyticsAllowed
+
         analyticsOkayCheckbox.setOnCheckedChangeListener { _, isChecked ->
             debug("User changed analytics to $isChecked")
-            (requireContext().applicationContext as GeeksvilleApplication).isAnalyticsAllowed =
-                isChecked
+            app.isAnalyticsAllowed = isChecked
+            reportBugButton.isEnabled = app.isAnalyticsAllowed
+        }
+
+        // report bug button only enabled if analytics is allowed
+        reportBugButton.isEnabled = app.isAnalyticsAllowed
+        reportBugButton.setOnClickListener {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.report_a_bug)
+                .setMessage(getString(R.string.report_bug_text))
+                .setNeutralButton(R.string.cancel) { _, _ ->
+                    debug("Decided not to report a bug")
+                }
+                .setPositiveButton(getString(R.string.report)) { _, _ ->
+                    reportError("Clicked Report A Bug")
+                }
+                .show()
+
+            true
         }
 
         scanModel.errorText.observe(viewLifecycleOwner, Observer { errMsg ->
@@ -293,7 +313,7 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
                     if (!device.bonded)
                         scanStatusText.setText(R.string.starting_pairing)
 
-                    b.isSelected = scanModel.onSelected(device)
+                    b.isSelected = scanModel.onSelected(requireActivity() as MainActivity, device)
 
                     if (!b.isSelected)
                         scanStatusText.setText(R.string.pairing_failed)
