@@ -2,7 +2,7 @@
 package com.geeksville.mesh;
 
 // Declare any non-default types here with import statements
-
+parcelable DataPacket;
 parcelable NodeInfo;
 
 /**
@@ -39,11 +39,14 @@ interface IMeshService {
     /**
     Get the IDs of everyone on the mesh.  You should also subscribe for NODE_CHANGE broadcasts.
     */
-    NodeInfo[] getNodes();
+    List<NodeInfo> getNodes();
 
     /// This method is only intended for use in our GUI, so the user can set radio options
     /// It returns a RadioConfig protobuf.
     byte []getRadioConfig();
+
+    /// Return an list of MeshPacket protobuf (byte arrays) which were received while your client app was offline (recent messages only)
+    List<DataPacket> getOldMessages();
 
     /// This method is only intended for use in our GUI, so the user can set radio options
     /// It sets a RadioConfig protobuf
@@ -54,8 +57,15 @@ interface IMeshService {
     */
     String connectionState();
 
+    /// If a macaddress we will try to talk to our device, if null we will be idle.
+    /// Any current connection will be dropped (even if the device address is the same) before reconnecting.
+    /// Users should not call this directly, only used internally by the MeshUtil activity
+    void setDeviceAddress(String deviceAddr);
+
     // see com.geeksville.com.geeksville.mesh broadcast intents
-    // RECEIVED_OPAQUE  for data received from other nodes
+    // RECEIVED_OPAQUE  for data received from other nodes.  payload will contain a DataPacket
     // NODE_CHANGE  for new IDs appearing or disappearing
     // CONNECTION_CHANGED for losing/gaining connection to the packet radio
+
+
 }

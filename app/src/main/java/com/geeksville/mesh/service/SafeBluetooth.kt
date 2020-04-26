@@ -14,12 +14,29 @@ import com.geeksville.concurrent.Continuation
 import com.geeksville.concurrent.SyncContinuation
 import com.geeksville.util.exceptionReporter
 import java.io.Closeable
-import java.io.IOException
 import java.util.*
 
 
 /// Return a standard BLE 128 bit UUID from the short 16 bit versions
 fun longBLEUUID(hexFour: String) = UUID.fromString("0000$hexFour-0000-1000-8000-00805f9b34fb")
+
+
+/**
+ * A helper class to call onChanged when bluetooth is enabled or disabled
+ */
+class BluetoothStateReceiver(val onChanged: (Boolean) -> Unit) : BroadcastReceiver() {
+    val intent = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED) // Can be used for registering
+
+    override fun onReceive(context: Context, intent: Intent) = exceptionReporter {
+        if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                // Simulate a disconnection if the user disables bluetooth entirely
+                BluetoothAdapter.STATE_OFF -> onChanged(false)
+                BluetoothAdapter.STATE_ON -> onChanged(true)
+            }
+        }
+    }
+}
 
 /**
  * Uses coroutines to safely access a bluetooth GATT device with a synchronous API
@@ -51,30 +68,26 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
     private val notifyHandlers = mutableMapOf<UUID, (BluetoothGattCharacteristic) -> Unit>()
 
     /// When we see the BT stack getting disabled/renabled we handle that as a connect/disconnect event
-    private val btStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) = exceptionReporter {
-            if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
-                val newstate = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
-                when (newstate) {
-                    // Simulate a disconnection if the user disables bluetooth entirely
-                    BluetoothAdapter.STATE_OFF -> {
-                        if (state == BluetoothProfile.STATE_CONNECTED)
-                            gattCallback.onConnectionStateChange(
-                                gatt!!,
-                                0,
-                                BluetoothProfile.STATE_DISCONNECTED
-                            )
-                        else
-                            debug("We were not connected, so ignoring bluetooth shutdown")
-                    }
-                    BluetoothAdapter.STATE_ON -> {
-                        warn("requeue a connect anytime bluetooth is reenabled")
-                        reconnect()
-                    }
-                }
-            }
+    private val btStateReceiver = BluetoothStateReceiver { enabled ->
+        if (!enabled) {
+            if (state == BluetoothProfile.STATE_CONNECTED)
+                gattCallback.onConnectionStateChange(
+                    gatt!!,
+                    0,
+                    BluetoothProfile.STATE_DISCONNECTED
+                )
+            else
+                debug("We were not connected, so ignoring bluetooth shutdown")
+        } else {
+            warn("requeue a connect anytime bluetooth is reenabled")
+            reconnect()
         }
     }
+
+    /**
+     * A BLE status code based error
+     */
+    class BLEStatusException(val status: Int, msg: String) : BLEException(msg)
 
     // 0x2902 org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
     private val configurationDescriptorUUID =
@@ -83,7 +96,7 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
     init {
         context.registerReceiver(
             btStateReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            btStateReceiver.intent
         )
     }
 
@@ -145,9 +158,12 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
                 BluetoothProfile.STATE_CONNECTED -> {
                     state =
                         newState // we only care about connected/disconnected - not the transitional states
-                    //logAssert(workQueue.isNotEmpty())
-                    //val work = workQueue.removeAt(0)
-                    completeWork(status, Unit)
+
+                    // If autoconnect is on and this connect attempt failed, hopefully some future attempt will succeed
+                    if (status != BluetoothGatt.GATT_SUCCESS && autoConnect) {
+                        errormsg("Connect attempt failed $status, not calling connect completion handler...")
+                    } else
+                        completeWork(status, Unit)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     // cancel any queued ops if we were already connected
@@ -166,7 +182,7 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
 
                         closeConnection()
                         */
-                        failAllWork(IOException("Lost connection"))
+                        failAllWork(BLEException("Lost connection"))
 
                         // Cancel any notifications - because when the device comes back it might have forgotten about us
                         notifyHandlers.clear()
@@ -196,6 +212,7 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            // For testing lie and claim failure
             completeWork(status, Unit)
         }
 
@@ -315,7 +332,9 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
             // startup next job in queue before calling the completion handler
             val work =
                 synchronized(workQueue) {
-                    val w = currentWork!! // will throw if null, which is helpful
+                    val w =
+                        currentWork
+                            ?: throw Exception("currentWork was null") // will throw if null, which is helpful (FIXME - throws in the field)
                     currentWork = null // We are now no longer working on anything
 
                     startNewWork()
@@ -324,7 +343,12 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
 
             debug("work ${work.tag} is completed, resuming status=$status, res=$res")
             if (status != 0)
-                work.completion.resumeWithException(IOException("Bluetooth status=$status while doing ${work.tag}"))
+                work.completion.resumeWithException(
+                    BLEStatusException(
+                        status,
+                        "Bluetooth status=$status while doing ${work.tag}"
+                    )
+                )
             else
                 work.completion.resume(Result.success(res) as Result<Nothing>)
         }
@@ -350,12 +374,17 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
         return cont.await(timeoutMsec)
     }
 
+    // Is the gatt trying to repeatedly connect as needed?
+    private var autoConnect = false
+
     // FIXME, pass in true for autoconnect - so we will autoconnect whenever the radio
     // comes in range (even if we made this connect call long ago when we got powered on)
     // see https://stackoverflow.com/questions/40156699/which-correct-flag-of-autoconnect-in-connectgatt-of-ble for
     // more info.
     // Otherwise if you pass in false, it will try to connect now and will timeout and fail in 30 seconds.
     private fun queueConnect(autoConnect: Boolean = false, cont: Continuation<Unit>) {
+        this.autoConnect = autoConnect
+
         // assert(gatt == null) this now might be !null with our new reconnect support
         queueWork("connect", cont) {
             val g =
@@ -472,17 +501,26 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
     ) = queueWriteDescriptor(c, CallbackContinuation(cb))
 
 
-    private fun closeConnection() {
-        failAllWork(IOException("Connection closing"))
+    /**
+     * Close down any existing connection, any existing calls (including async connects will be
+     * cancelled and you'll need to recall connect to use this againt
+     */
+    fun closeConnection() {
+        failAllWork(BLEException("Connection closing"))
 
         if (gatt != null) {
             info("Closing our GATT connection")
             gatt!!.disconnect()
             gatt!!.close()
             gatt = null
+            lostConnectCallback = null
+            connectionCallback = null
         }
     }
 
+    /**
+     * Close and destroy this SafeBluetooth instance.  You'll need to make a new instance before using it again
+     */
     override fun close() {
         closeConnection()
 
@@ -525,7 +563,8 @@ class SafeBluetooth(private val context: Context, private val device: BluetoothD
         at android.os.Binder.execTransact(Binder.java:994)
          */
         // per https://stackoverflow.com/questions/27068673/subscribe-to-a-ble-gatt-notification-android
-        val descriptor: BluetoothGattDescriptor = c.getDescriptor(configurationDescriptorUUID)!!
+        val descriptor: BluetoothGattDescriptor = c.getDescriptor(configurationDescriptorUUID)
+            ?: throw BLEException("Notify descriptor not found for ${c.uuid}") // This can happen on buggy BLE implementations
         descriptor.value =
             if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         asyncWriteDescriptor(descriptor) {

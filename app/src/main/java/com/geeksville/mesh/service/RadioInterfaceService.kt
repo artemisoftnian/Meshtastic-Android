@@ -1,20 +1,26 @@
 package com.geeksville.mesh.service
 
+import android.annotation.SuppressLint
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.companion.CompanionDeviceManager
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.RemoteException
 import androidx.core.content.edit
+import com.geeksville.analytics.DataPair
 import com.geeksville.android.BinaryLogFile
 import com.geeksville.android.GeeksvilleApplication
 import com.geeksville.android.Logging
 import com.geeksville.concurrent.DeferredExecution
 import com.geeksville.mesh.IRadioInterfaceService
+import com.geeksville.mesh.anonymized
 import com.geeksville.util.exceptionReporter
+import com.geeksville.util.ignoreException
 import com.geeksville.util.toRemoteExceptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +88,11 @@ A variable keepAllPackets, if set to true will suppress this behavior and instea
 
  */
 
+
+class RadioNotConnectedException(message: String = "Not connected to radio") :
+    BLEException(message)
+
+
 /**
  * Handles the bluetooth link with a mesh radio device.  Does not cache any device state,
  * just does bluetooth comms etc...
@@ -136,6 +147,11 @@ class RadioInterfaceService : Service(), Logging {
         /// If our service is currently running, this pointer can be used to reach it (in case setBondedDeviceAddress is called)
         private var runningService: RadioInterfaceService? = null
 
+        /**
+         * Temp hack (until old API deprecated), we probe for old API at connected
+         */
+        var isOldApi: Boolean? = null
+
         /// This is public only so that SimRadio can bootstrap our message flow
         fun broadcastReceivedFromRadio(context: Context, payload: ByteArray) {
             val intent = Intent(RECEIVE_FROMRADIO_ACTION)
@@ -154,49 +170,44 @@ class RadioInterfaceService : Service(), Logging {
         }
 
         /// Return the device we are configured to use, or null for none
-        fun getBondedDeviceAddress(context: Context): String? {
+        @SuppressLint("NewApi")
+        fun getBondedDeviceAddress(context: Context): String? =
+            if (hasCompanionDeviceApi(context)) {
+                // Use new companion API
 
-            val allPaired =
-                getBluetoothAdapter(context)?.bondedDevices.orEmpty().map { it.address }.toSet()
+                val deviceManager = context.getSystemService(CompanionDeviceManager::class.java)
+                val associations = deviceManager.associations
+                val result = associations.firstOrNull()
+                debug("reading bonded devices: $result")
+                result
+            } else {
+                // Use classic API and a preferences string
 
-            // If the user has unpaired our device, treat things as if we don't have one
-            val addr = getPrefs(context).getString(DEVADDR_KEY, null)
-            return if (addr != null && !allPaired.contains(addr)) {
-                warn("Ignoring stale bond to $addr")
-                null
-            } else
-                addr
-        }
+                val allPaired =
+                    getBluetoothAdapter(context)?.bondedDevices.orEmpty().map { it.address }.toSet()
 
-        fun setBondedDeviceAddress(context: Context, addr: String?) {
-            getPrefs(context).edit(commit = true) {
-                if (addr == null)
-                    this.remove(DEVADDR_KEY)
-                else
-                    putString(DEVADDR_KEY, addr)
+                // If the user has unpaired our device, treat things as if we don't have one
+                val address = getPrefs(context).getString(DEVADDR_KEY, null)
+
+                if (address != null && !allPaired.contains(address)) {
+                    warn("Ignoring stale bond to ${address.anonymized}")
+                    null
+                } else
+                    address
             }
 
-            // Record that this use has configured a radio
-            GeeksvilleApplication.analytics.track(
-                "mesh_bond"
-            )
 
-            // Force the service to reconnect
-            val s = runningService
-            if (s != null) {
-                // Ignore any errors that happen while closing old device
-                exceptionReporter {
-                    info("shutting down old service")
-                    s.setEnabled(false) // nasty, needed to force the next setEnabled call to reconnect
-                }
-                info("Setting enable on the running radio service")
-                s.setEnabled(addr != null)
-            }
-            if (addr != null) {
-                info("We have a device addr now, starting mesh service")
-                MeshService.startService(context)
-            }
-        }
+        /// Can we use the modern BLE scan API?
+        fun hasCompanionDeviceApi(context: Context): Boolean = false /* ALAS - not ready for production yet
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val res =
+                    context.packageManager.hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)
+                debug("CompanionDevice API available=$res")
+                res
+            } else {
+                warn("CompanionDevice API not available, falling back to classic scan")
+                false
+            } */
     }
 
 
@@ -206,8 +217,11 @@ class RadioInterfaceService : Service(), Logging {
     /// Our BLE device
     val device get() = safe!!.gatt!!
 
-    /// Our service
-    val service get() = device.getService(BTM_SERVICE_UUID)
+    /// Our service - note - it is possible to get back a null response for getService if the device services haven't yet been found
+    val service
+        get(): BluetoothGattService = device.getService(BTM_SERVICE_UUID)
+            ?: throw RadioNotConnectedException("BLE service not found")
+
     //.services.find { it.uuid == BTM_SERVICE_UUID }!!
 
     private lateinit var fromNum: BluetoothGattCharacteristic
@@ -226,24 +240,38 @@ class RadioInterfaceService : Service(), Logging {
     /// we have completed our initial connection
     private val clientOperations = DeferredExecution()
 
-    private fun broadcastConnectionChanged(isConnected: Boolean) {
+    private fun broadcastConnectionChanged(isConnected: Boolean, isPermanent: Boolean) {
         debug("Broadcasting connection=$isConnected")
         val intent = Intent(RADIO_CONNECTED_ACTION)
         intent.putExtra(EXTRA_CONNECTED, isConnected)
+        intent.putExtra(EXTRA_PERMANENT, isPermanent)
         sendBroadcast(intent)
     }
 
+    /**
+     * With the new rev2 api, our first send is to start the configure readbacks.  In that case,
+     * rather than waiting for FromNum notifies - we try to just aggressively read all of the responses.
+     */
+    private var isFirstSend = true
+
     /// Send a packet/command out the radio link
     private fun handleSendToRadio(p: ByteArray) {
+        // Do this in the IO thread because it might take a while
+        serviceScope.handledLaunch {
+            debug("sending to radio")
+            doWrite(
+                BTM_TORADIO_CHARACTER,
+                p
+            ) // Do a synchronous write, so that we can then do our reads if needed
+            if (logSends) {
+                sentPacketsLog.write(p)
+                sentPacketsLog.flush()
+            }
 
-        // For debugging/logging purposes ONLY we convert back into a protobuf for readability
-        // al proto = MeshProtos.ToRadio.parseFrom(p)
-
-        debug("sending to radio")
-        doAsyncWrite(BTM_TORADIO_CHARACTER, p)
-        if (logSends) {
-            sentPacketsLog.write(p)
-            sentPacketsLog.flush()
+            if (isFirstSend) {
+                isFirstSend = false
+                doReadFromRadio(false)
+            }
         }
     }
 
@@ -261,11 +289,11 @@ class RadioInterfaceService : Service(), Logging {
     }
 
     /// Attempt to read from the fromRadio mailbox, if data is found broadcast it to android apps
-    private fun doReadFromRadio() {
+    private fun doReadFromRadio(firstRead: Boolean) {
         if (!isConnected)
             warn("Abandoning fromradio read because we are not connected")
         else {
-            val fromRadio = service.getCharacteristic(BTM_FROMRADIO_CHARACTER)
+            val fromRadio = getCharacteristic(BTM_FROMRADIO_CHARACTER)
             safe!!.asyncReadCharacteristic(fromRadio) {
                 val b = it.getOrThrow()
                     .value.clone() // We clone the array just in case, I'm not sure if they keep reusing the array
@@ -275,17 +303,62 @@ class RadioInterfaceService : Service(), Logging {
                     handleFromRadio(b)
 
                     // Queue up another read, until we run out of packets
-                    doReadFromRadio()
+                    doReadFromRadio(firstRead)
                 } else {
                     debug("Done reading from radio, fromradio is empty")
+                    if (firstRead) // If we just finished our initial download, now we want to start listening for notifies
+                        startWatchingFromNum()
                 }
             }
         }
     }
 
 
-    private fun onDisconnect() {
-        broadcastConnectionChanged(false)
+    @SuppressLint("NewApi")
+    fun setBondedDeviceAddress(addr: String?) {
+        // Record that this use has configured a radio
+        GeeksvilleApplication.analytics.track(
+            "mesh_bond"
+        )
+
+        // Ignore any errors that happen while closing old device
+        ignoreException {
+            Companion.info("shutting down old service")
+            setEnabled(false) // nasty, needed to force the next setEnabled call to reconnect
+        }
+
+        debug("Setting bonded device to $addr")
+        if (hasCompanionDeviceApi(this)) {
+            // We only keep an association to one device at a time...
+            if (addr != null) {
+                val deviceManager = getSystemService(CompanionDeviceManager::class.java)
+
+                deviceManager.associations.forEach { old ->
+                    if (addr != old) {
+                        Companion.debug("Forgetting old BLE association $old")
+                        deviceManager.disassociate(old)
+                    }
+                }
+            }
+        } else {
+            getPrefs(this).edit(commit = true) {
+                if (addr == null)
+                    this.remove(DEVADDR_KEY)
+                else
+                    putString(DEVADDR_KEY, addr)
+            }
+        }
+
+        // Force the service to reconnect
+        if (addr != null) {
+            info("Setting enable on the running radio service")
+            setEnabled(true)
+        }
+    }
+
+
+    private fun onDisconnect(isPermanent: Boolean) {
+        broadcastConnectionChanged(false, isPermanent)
         isConnected = false
     }
 
@@ -305,10 +378,86 @@ class RadioInterfaceService : Service(), Logging {
     /// We only force service refresh the _first_ time we connect to the device.  Thereafter it is assumed the firmware didn't change
     private var hasForcedRefresh = false
 
+    private fun startWatchingFromNum() {
+        safe!!.setNotify(fromNum, true) {
+            debug("fromNum changed, so we are reading new messages")
+            doReadFromRadio(false)
+        }
+    }
+
+    // private var isFirstTime = true
+
+    /**
+     * Some buggy BLE stacks can fail on initial connect, with either missing services or missing characteristics.  If that happens we
+     * disconnect and try again when the device reenumerates.
+     */
+    private suspend fun retryDueToException() {
+        // Track how often in the field we need this hack
+        GeeksvilleApplication.analytics.track(
+            "ble_reconnect_hack",
+            DataPair(1)
+        )
+
+        warn("Forcing disconnect and hopefully device will comeback (disabling forced refresh)")
+        hasForcedRefresh = true
+        ignoreException {
+            safe!!.closeConnection()
+        }
+        delay(1000) // Give some nasty time for buggy BLE stacks to shutdown (500ms was not enough)
+        warn("Attempting reconnect")
+        startConnect()
+    }
+
+    /// We only try to set MTU once, because some buggy implementations fail
+    private var shouldSetMtu = true
+
+    private fun doDiscoverServicesAndInit() {
+        // FIXME - no need to discover services more than once - instead use lazy() to use them in future attempts
+        safe!!.asyncDiscoverServices { discRes ->
+            discRes.getOrThrow() // FIXME, instead just try to reconnect?
+
+            serviceScope.handledLaunch {
+                try {
+                    debug("Discovered services!")
+                    delay(500) // android BLE is buggy and needs a 500ms sleep before calling getChracteristic, or you might get back null
+
+                    // service could be null, test this by throwing BLEException and testing it on my machine
+                    isOldApi = service.getCharacteristic(BTM_RADIO_CHARACTER) != null
+                    warn("Use oldAPI = $isOldApi")
+
+                    /* if (isFirstTime) {
+                    isFirstTime = false
+                    throw BLEException("Faking a BLE failure")
+                } */
+
+                    fromNum = getCharacteristic(BTM_FROMNUM_CHARACTER)
+
+                    // We must set this to true before broadcasting connectionChanged
+                    isConnected = true
+
+                    // We treat the first send by a client as special
+                    isFirstSend = true
+
+                    // Now tell clients they can (finally use the api)
+                    broadcastConnectionChanged(true, isPermanent = false)
+
+                    // Immediately broadcast any queued packets sitting on the device
+                    doReadFromRadio(true)
+                } catch (ex: BLEException) {
+                    errormsg(
+                        "Unexpected error in initial device enumeration, forcing disconnect",
+                        ex
+                    )
+                    retryDueToException()
+                }
+            }
+        }
+    }
+
     private fun onConnect(connRes: Result<Unit>) {
         // This callback is invoked after we are connected
 
-        connRes.getOrThrow() // FIXME, instead just try to reconnect?
+        connRes.getOrThrow()
         info("Connected to radio!")
 
         if (!hasForcedRefresh) {
@@ -317,45 +466,46 @@ class RadioInterfaceService : Service(), Logging {
             forceServiceRefresh()
         }
 
-        // FIXME - no need to discover services more than once - instead use lazy() to use them in future attempts
-        safe!!.asyncDiscoverServices { discRes ->
-            discRes.getOrThrow() // FIXME, instead just try to reconnect?
-            debug("Discovered services! Service size=${service.characteristics.size}")
-
-            // we begin by setting our MTU size as high as it can go
+        // we begin by setting our MTU size as high as it can go (if we can)
+        if (shouldSetMtu)
             safe!!.asyncRequestMtu(512) { mtuRes ->
-                serviceScope.handledLaunch {
-                    debug("requested MTU result=$mtuRes")
+                try {
                     mtuRes.getOrThrow() // FIXME - why sometimes is the result Unit!?!
-                    delay(500) // android BLE is buggy and needs a 500ms sleep before calling getChracteristic, or you might get back null
+                    debug("MTU change attempted")
 
-                    fromNum = service.getCharacteristic(BTM_FROMNUM_CHARACTER)!!
+                    // throw BLEException("Test MTU set failed")
 
-                    // We must set this to true before broadcasting connectionChanged
-                    isConnected = true
-
-                    safe!!.setNotify(fromNum, true) {
-                        debug("fromNum changed, so we are reading new messages")
-                        doReadFromRadio()
-                    }
-
-                    // Now tell clients they can (finally use the api)
-                    broadcastConnectionChanged(true)
-
-                    // Immediately broadcast any queued packets sitting on the device
-                    doReadFromRadio()
+                    doDiscoverServicesAndInit()
+                } catch (ex: BLEException) {
+                    errormsg(
+                        "Giving up on setting MTUs, forcing disconnect",
+                        ex
+                    )
+                    shouldSetMtu = false
+                    serviceScope.handledLaunch { retryDueToException() }
                 }
             }
-        }
+        else
+            doDiscoverServicesAndInit()
+    }
+
+    /**
+     * If the user turns on bluetooth after we start, make sure to try and reconnected then
+     */
+    private val bluetoothStateReceiver = BluetoothStateReceiver { enabled ->
+        if (enabled)
+            setEnabled(true)
     }
 
     override fun onCreate() {
         runningService = this
         super.onCreate()
         setEnabled(true)
+        registerReceiver(bluetoothStateReceiver, bluetoothStateReceiver.intent)
     }
 
     override fun onDestroy() {
+        unregisterReceiver(bluetoothStateReceiver)
         setEnabled(false)
         serviceJob.cancel()
         runningService = null
@@ -366,6 +516,17 @@ class RadioInterfaceService : Service(), Logging {
         return binder;
     }
 
+    /// Start a connection attempt
+    private fun startConnect() {
+        // we pass in true for autoconnect - so we will autoconnect whenever the radio
+        // comes in range (even if we made this connect call long ago when we got powered on)
+        // see https://stackoverflow.com/questions/40156699/which-correct-flag-of-autoconnect-in-connectgatt-of-ble for
+        // more info
+        safe!!.asyncConnect(true,
+            cb = ::onConnect,
+            lostConnectCb = { onDisconnect(isPermanent = false) })
+    }
+
     /// Open or close a bluetooth connection to our device
     private fun setEnabled(on: Boolean) {
         if (on) {
@@ -374,23 +535,19 @@ class RadioInterfaceService : Service(), Logging {
             } else {
                 val address = getBondedDeviceAddress(this)
                 if (address == null)
-                    errormsg("No bonded mesh radio, can't create service")
+                    errormsg("No bonded mesh radio, can't start service")
                 else {
                     // Note: this call does no comms, it just creates the device object (even if the
                     // device is off/not connected)
                     val device = getBluetoothAdapter(this)?.getRemoteDevice(address)
                     if (device != null) {
-                        info("Creating radio interface service.  device=$address")
+                        info("Creating radio interface service.  device=${address.anonymized}")
 
                         // Note this constructor also does no comm
                         val s = SafeBluetooth(this, device)
                         safe = s
 
-                        // FIXME, pass in true for autoconnect - so we will autoconnect whenever the radio
-                        // comes in range (even if we made this connect call long ago when we got powered on)
-                        // see https://stackoverflow.com/questions/40156699/which-correct-flag-of-autoconnect-in-connectgatt-of-ble for
-                        // more info
-                        s.asyncConnect(true, ::onConnect, ::onDisconnect)
+                        startConnect()
                     } else {
                         errormsg("Bluetooth adapter not found, assuming running on the emulator!")
                     }
@@ -402,13 +559,18 @@ class RadioInterfaceService : Service(), Logging {
                 }
             }
         } else {
-            info("Closing radio interface service")
-            if (logSends)
-                sentPacketsLog.close()
-            if (logReceives)
-                receivedPacketsLog.close()
-            safe?.close()
-            safe = null
+            if (safe != null) {
+                info("Closing radio interface service")
+                if (logSends)
+                    sentPacketsLog.close()
+                if (logReceives)
+                    receivedPacketsLog.close()
+                safe?.close()
+                safe = null
+                onDisconnect(isPermanent = true) // Tell any clients we are now offline
+            } else {
+                debug("Radio was not connected, skipping disable")
+            }
         }
     }
 
@@ -423,13 +585,19 @@ class RadioInterfaceService : Service(), Logging {
 
             // Note: we generate a new characteristic each time, because we are about to
             // change the data and we want the data stored in the closure
-            val toRadio = service.getCharacteristic(uuid)
+            val toRadio = getCharacteristic(uuid)
             toRadio.value = a
 
             safe!!.writeCharacteristic(toRadio)
             debug("write of ${a.size} bytes completed")
         }
     }
+
+    /**
+     * Get a chracteristic, but in a safe manner because some buggy BLE implementations might return null
+     */
+    private fun getCharacteristic(uuid: UUID) =
+        service.getCharacteristic(uuid) ?: throw BLEException("Can't get characteristic $uuid")
 
     /**
      * do an asynchronous write operation
@@ -443,7 +611,7 @@ class RadioInterfaceService : Service(), Logging {
 
             // Note: we generate a new characteristic each time, because we are about to
             // change the data and we want the data stored in the closure
-            val toRadio = service.getCharacteristic(uuid)
+            val toRadio = getCharacteristic(uuid)
             toRadio.value = a
 
             safe!!.asyncWriteCharacteristic(toRadio) {
@@ -461,7 +629,7 @@ class RadioInterfaceService : Service(), Logging {
         else {
             // Note: we generate a new characteristic each time, because we are about to
             // change the data and we want the data stored in the closure
-            val toRadio = service.getCharacteristic(uuid)
+            val toRadio = getCharacteristic(uuid)
             var a = safe!!.readCharacteristic(toRadio)
                 .value.clone() // we copy the bluetooth array because it might still be in use
             debug("Read of $uuid got ${a.size} bytes")
@@ -474,8 +642,9 @@ class RadioInterfaceService : Service(), Logging {
     }
 
     private val binder = object : IRadioInterfaceService.Stub() {
-        override fun enableLink(enable: Boolean) = toRemoteExceptions {
-            setEnabled(enable)
+
+        override fun setDeviceAddress(deviceAddr: String?) = toRemoteExceptions {
+            setBondedDeviceAddress(deviceAddr)
         }
 
         // A write of any size to nodeinfo means restart reading

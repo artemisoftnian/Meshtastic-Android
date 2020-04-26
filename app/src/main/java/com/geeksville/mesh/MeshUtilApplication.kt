@@ -1,6 +1,7 @@
 package com.geeksville.mesh
 
 import android.os.Debug
+import com.geeksville.android.AppPrefs
 import com.geeksville.android.BuildUtils.isEmulator
 import com.geeksville.android.GeeksvilleApplication
 import com.geeksville.android.Logging
@@ -23,9 +24,13 @@ class MeshUtilApplication : GeeksvilleApplication() {
             crashlytics.setCrashlyticsCollectionEnabled(isAnalyticsAllowed)
             crashlytics.setCustomKey("debug_build", BuildConfig.DEBUG)
 
+            val pref = AppPrefs(this)
+            crashlytics.setUserId(pref.getInstallId()) // be able to group all bugs per anonymous user
+
             // Attach to our exception wrapper
             Exceptions.reporter = { exception, _, _ ->
                 crashlytics.recordException(exception)
+                crashlytics.sendUnsentReports()
             }
 
             if (isAnalyticsAllowed) {
