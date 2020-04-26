@@ -4,7 +4,6 @@ import android.os.RemoteException
 import androidx.lifecycle.MutableLiveData
 import com.geeksville.android.BuildUtils.isEmulator
 import com.geeksville.android.Logging
-import com.geeksville.mesh.DataPacket
 import com.geeksville.mesh.MeshProtos
 import com.geeksville.mesh.utf8
 import java.util.*
@@ -19,14 +18,7 @@ data class TextMessage(
     val text: String,
     val date: Date = Date(),
     val errorMessage: String? = null
-) {
-    /// We can auto init from data packets
-    constructor(payload: DataPacket) : this(
-        payload.from,
-        payload.bytes.toString(utf8),
-        date = Date(payload.rxTime)
-    )
-}
+)
 
 
 class MessagesState(private val ui: UIViewModel) : Logging {
@@ -49,13 +41,9 @@ class MessagesState(private val ui: UIViewModel) : Logging {
         }
 
     /// add a message our GUI list of past msgs
-    private fun addMessage(m: TextMessage) {
-        // FIXME - don't just slam in a new list each time, it probably causes extra drawing.
+    fun addMessage(m: TextMessage) {
         messages.value = messages.value!! + m
     }
-
-    /// Add a message that was encapsulated in a data packet
-    fun addMessage(payload: DataPacket) = addMessage(TextMessage(payload))
 
     /// Send a message and added it to our GUI log
     fun sendMessage(str: String, dest: String? = null) {

@@ -20,7 +20,7 @@
         app:layout_constraintTop_toBottomOf="@+id/deviceRadioGroup" />
 
     <com.google.android.material.textfield.TextInputLayout
-        android:id="@+id/usernameView"
+        android:id="@+id/textInputLayout2"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
@@ -35,21 +35,19 @@
             android:id="@+id/usernameEditText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:imeOptions="actionDone"
-            android:singleLine="true" />
+            android:singleLine="true"
+            android:imeOptions="actionDone" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.textview.MaterialTextView
         android:id="@+id/scanStatusText"
-        android:layout_width="0dp"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
         android:layout_marginTop="16dp"
-        android:layout_marginEnd="16dp"
         android:text="@string/looking_for_meshtastic_devices"
-        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/usernameView" />
+        app:layout_constraintTop_toBottomOf="@+id/textInputLayout2" />
 
     <ProgressBar
         android:id="@+id/scanProgressBar"
@@ -68,7 +66,7 @@
         android:layout_marginStart="16dp"
         android:layout_marginTop="16dp"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/changeRadioButton">
+        app:layout_constraintTop_toBottomOf="@+id/scanStatusText">
 
         <RadioButton
             android:id="@+id/radioButton2"
@@ -106,16 +104,6 @@
         android:text="@string/report_bug"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
-
-    <Button
-        android:id="@+id/changeRadioButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/select_radio"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/scanStatusText" />
 
 
 </androidx.constraintlayout.widget.ConstraintLayout>

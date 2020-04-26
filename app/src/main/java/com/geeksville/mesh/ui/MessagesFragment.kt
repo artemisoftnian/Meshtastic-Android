@@ -14,7 +14,6 @@ import com.geeksville.android.Logging
 import com.geeksville.mesh.R
 import com.geeksville.mesh.model.TextMessage
 import com.geeksville.mesh.model.UIViewModel
-import com.geeksville.mesh.service.MeshService
 import kotlinx.android.synthetic.main.adapter_message_layout.view.*
 import kotlinx.android.synthetic.main.messages_fragment.*
 import java.text.SimpleDateFormat
@@ -167,19 +166,6 @@ class MessagesFragment : ScreenFragment("Messages"), Logging {
 
         model.messagesState.messages.observe(viewLifecycleOwner, Observer { it ->
             messagesAdapter.onMessagesChanged(it)
-        })
-
-        // If connection state _OR_ myID changes we have to fix our ability to edit outgoing messages
-        model.isConnected.observe(viewLifecycleOwner, Observer { connected ->
-            // If we don't know our node ID and we are offline don't let user try to send
-            textInputLayout.isEnabled =
-                connected != MeshService.ConnectionState.DISCONNECTED && model.nodeDB.myId.value != null
-        })
-
-        model.nodeDB.myId.observe(viewLifecycleOwner, Observer { myId ->
-            // If we don't know our node ID and we are offline don't let user try to send
-            textInputLayout.isEnabled =
-                model.isConnected.value != MeshService.ConnectionState.DISCONNECTED && myId != null
         })
     }
 

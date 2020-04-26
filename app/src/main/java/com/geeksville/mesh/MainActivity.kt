@@ -2,12 +2,8 @@ package com.geeksville.mesh
 
 // import kotlinx.android.synthetic.main.tabs.*
 import android.Manifest
-import android.annotation.SuppressLint
-import android.app.Activity
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.companion.CompanionDeviceManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -108,8 +104,6 @@ class MainActivity : AppCompatActivity(), Logging,
         const val REQUEST_ENABLE_BT = 10
         const val DID_REQUEST_PERM = 11
         const val RC_SIGN_IN = 12 // google signin completed
-        const val RC_SELECT_DEVICE =
-            13 // seems to be hardwired in CompanionDeviceManager to add 65536
     }
 
 
@@ -118,7 +112,7 @@ class MainActivity : AppCompatActivity(), Logging,
         bluetoothManager.adapter
     }
 
-    val model: UIViewModel by viewModels()
+    private val model: UIViewModel by viewModels()
 
     data class TabInfo(val text: String, val icon: Int, val content: Fragment)
 
@@ -167,47 +161,6 @@ class MainActivity : AppCompatActivity(), Logging,
         }
     }
 
-
-    private val btStateReceiver = BluetoothStateReceiver { enabled ->
-        updateBluetoothEnabled()
-    }
-
-
-    /**
-     * Don't tell our app we have bluetooth until we have bluetooth _and_ location access
-     */
-    private fun updateBluetoothEnabled() {
-        var enabled = false // assume failure
-
-        val requiredPerms = listOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN
-        )
-
-
-        if (getMissingPermissions(requiredPerms).isEmpty()) {
-            /// ask the adapter if we have access
-            bluetoothAdapter?.apply {
-                enabled = isEnabled
-            }
-        } else
-            errormsg("Still missing needed bluetooth permissions")
-
-        debug("Detected our bluetooth access=$enabled")
-        model.bluetoothEnabled.value = enabled
-    }
-
-    /**
-     * return a list of the permissions we don't have
-     */
-    private fun getMissingPermissions(perms: List<String>) = perms.filter {
-        ContextCompat.checkSelfPermission(
-            this,
-            it
-        ) != PackageManager.PERMISSION_GRANTED
-    }
-
     private fun requestPermission() {
         debug("Checking permissions")
 
@@ -225,13 +178,12 @@ class MainActivity : AppCompatActivity(), Logging,
         if (Build.VERSION.SDK_INT >= 29) // only added later
             perms.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
 
-        // Some old phones complain about requesting perms they don't understand
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            perms.add(Manifest.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND)
-            perms.add(Manifest.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND)
+        val missingPerms = perms.filter {
+            ContextCompat.checkSelfPermission(
+                this,
+                it
+            ) != PackageManager.PERMISSION_GRANTED
         }
-
-        val missingPerms = getMissingPermissions(perms)
         if (missingPerms.isNotEmpty()) {
             missingPerms.forEach {
                 // Permission is not granted
@@ -267,27 +219,13 @@ class MainActivity : AppCompatActivity(), Logging,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        // Older versions of android don't know about these permissions - ignore failure to grant
-        val ignoredPermissions = arrayOf(
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND,
-            Manifest.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND
-        )
-
-        val deniedPermissions = permissions.filterIndexed { index, name ->
-            grantResults[index] == PackageManager.PERMISSION_DENIED &&
-                    !ignoredPermissions.contains(name)
-        }
-
-        if (deniedPermissions.isNotEmpty()) {
-            warn("Denied permissions: ${deniedPermissions.joinToString(",")}")
+        if (grantResults.contains(PackageManager.PERMISSION_DENIED)) {
             Toast.makeText(
                 this,
                 getString(R.string.permission_missing),
                 Toast.LENGTH_LONG
             ).show()
         }
-        updateBluetoothEnabled()
     }
 
 
@@ -335,9 +273,6 @@ class MainActivity : AppCompatActivity(), Logging,
         }
     }
 
-    private val isInTestLab: Boolean by lazy {
-        (application as GeeksvilleApplication).isInTestLab
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -345,11 +280,23 @@ class MainActivity : AppCompatActivity(), Logging,
         val prefs = UIViewModel.getPreferences(this)
         model.ownerName.value = prefs.getString("owner", "")!!
 
-        /// Set initial bluetooth state
-        updateBluetoothEnabled()
+        val isInTestLab = (application as GeeksvilleApplication).isInTestLab
 
-        /// We now want to be informed of bluetooth state
-        registerReceiver(btStateReceiver, btStateReceiver.intent)
+        // Ensures Bluetooth is available on the device and it is enabled. If not,
+        // displays a dialog requesting user permission to enable Bluetooth.
+        if (bluetoothAdapter != null && !isInTestLab) {
+            bluetoothAdapter!!.takeIf { !it.isEnabled }?.apply {
+                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT)
+            }
+        } else {
+            Toast.makeText(
+                this,
+                R.string.error_bluetooth,
+                Toast.LENGTH_LONG
+            )
+                .show()
+        }
 
         // if (!isInTestLab) - very important - even in test lab we must request permissions because we need location perms for some of our tests to pass
         requestPermission()
@@ -391,7 +338,6 @@ class MainActivity : AppCompatActivity(), Logging,
                 MeshService.ConnectionState.CONNECTED -> R.drawable.cloud_on
                 MeshService.ConnectionState.DEVICE_SLEEP -> R.drawable.ic_twotone_cloud_upload_24
                 MeshService.ConnectionState.DISCONNECTED -> R.drawable.cloud_off
-                else -> R.drawable.cloud_off
             }
 
             connectStatusImage.setImageDrawable(getDrawable(image))
@@ -419,7 +365,7 @@ class MainActivity : AppCompatActivity(), Logging,
             requestedChannelUrl = appLinkData
 
             // if the device is connected already, process it now
-            if (model.isConnected.value == MeshService.ConnectionState.CONNECTED)
+            if (model.isConnected == MeshService.ConnectionState.CONNECTED)
                 perhapsChangeChannel()
 
             // We now wait for the device to connect, once connected, we ask the user if they want to switch to the new channel
@@ -427,8 +373,6 @@ class MainActivity : AppCompatActivity(), Logging,
     }
 
     override fun onDestroy() {
-
-        unregisterReceiver(btStateReceiver)
         unregisterMeshReceiver()
         super.onDestroy()
     }
@@ -436,7 +380,6 @@ class MainActivity : AppCompatActivity(), Logging,
     /**
      * Dispatch incoming result to the correct fragment.
      */
-    @SuppressLint("InlinedApi")
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
@@ -446,34 +389,12 @@ class MainActivity : AppCompatActivity(), Logging,
 
         // Result returned from launching the Intent from GoogleSignInClient.getSignInIntent(...);
         // Result returned from launching the Intent from GoogleSignInClient.getSignInIntent(...);
-        when (requestCode) {
-            RC_SIGN_IN -> {
-                // The Task returned from this call is always completed, no need to attach
-                // a listener.
-                val task: Task<GoogleSignInAccount> =
-                    GoogleSignIn.getSignedInAccountFromIntent(data)
-                handleSignInResult(task)
-            }
-            (65536 + RC_SELECT_DEVICE) -> when (resultCode) {
-                Activity.RESULT_OK -> {
-                    // User has chosen to pair with the Bluetooth device.
-                    val device: BluetoothDevice =
-                        data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE)!!
-                    debug("Received BLE pairing ${device.address}")
-                    if (device.bondState != BluetoothDevice.BOND_BONDED) {
-                        device.createBond()
-                        // FIXME - wait for bond to complete
-                    }
-
-                    // ... Continue interacting with the paired device.
-                    model.meshService?.let { service ->
-                        service.setDeviceAddress(device.address)
-                    }
-                }
-
-                else ->
-                    warn("BLE device select intent failed")
-            }
+        if (requestCode == RC_SIGN_IN) {
+            // The Task returned from this call is always completed, no need to attach
+            // a listener.
+            val task: Task<GoogleSignInAccount> =
+                GoogleSignIn.getSignedInAccountFromIntent(data)
+            handleSignInResult(task)
         }
     }
 
@@ -511,25 +432,6 @@ class MainActivity : AppCompatActivity(), Logging,
     }
 
 
-    /// Pull our latest node db from the device
-    private fun updateNodesFromDevice() {
-        model.meshService?.let { service ->
-            // Update our nodeinfos based on data from the device
-            val nodes = service.nodes.map {
-                it.user?.id!! to it
-            }.toMap()
-
-            model.nodeDB.nodes.value = nodes
-
-            try {
-                // Pull down our real node ID - This must be done AFTER reading the nodedb because we need the DB to find our nodeinof object
-                model.nodeDB.myId.value = service.myId
-            } catch (ex: Exception) {
-                warn("Ignoring failure to get myId, service is probably just uninited... ${ex.message}")
-            }
-        }
-    }
-
     /// Called when we gain/lose a connection to our mesh radio
     private fun onMeshConnectionChanged(connected: MeshService.ConnectionState) {
         model.isConnected.value = connected
@@ -542,9 +444,17 @@ class MainActivity : AppCompatActivity(), Logging,
             model.meshService?.let { service ->
                 debug("Getting latest radioconfig from service")
                 model.radioConfig.value =
-                    MeshProtos.RadioConfig.parseFrom(service.radioConfig)
+                    MeshProtos.RadioConfig.parseFrom(model.meshService!!.radioConfig)
 
-                updateNodesFromDevice()
+                // Update our nodeinfos based on data from the device
+                val nodes = service.nodes.map {
+                    it.user?.id!! to it
+                }.toMap()
+
+                model.nodeDB.nodes.value = nodes
+
+                // Pull down our real node ID - This must be done AFTER reading the nodedb because we need the DB to find our nodeinof object
+                model.nodeDB.myId.value = service.myId
 
                 // we have a connection to our device now, do the channel change
                 perhapsChangeChannel()
@@ -605,16 +515,25 @@ class MainActivity : AppCompatActivity(), Logging,
                     }
 
                     MeshService.ACTION_RECEIVED_DATA -> {
-                        debug("received new data from service")
+                        debug("TODO rxdata")
+                        val sender =
+                            intent.getStringExtra(EXTRA_SENDER)!!
                         val payload =
-                            intent.getParcelableExtra<DataPacket>(EXTRA_PAYLOAD)!!
+                            intent.getByteArrayExtra(EXTRA_PAYLOAD)!!
+                        val typ = intent.getIntExtra(EXTRA_TYP, -1)
 
-                        when (payload.dataType) {
+                        when (typ) {
                             MeshProtos.Data.Type.CLEAR_TEXT_VALUE -> {
-                                model.messagesState.addMessage(payload)
+                                // FIXME - use the real time from the packet
+                                // FIXME - don't just slam in a new list each time, it probably causes extra drawing.  Figure out how to be Compose smarter...
+                                val msg = TextMessage(
+                                    sender,
+                                    payload.toString(utf8)
+                                )
+
+                                model.messagesState.addMessage(msg)
                             }
-                            else ->
-                                errormsg("Unhandled dataType ${payload.dataType}")
+                            else -> TODO()
                         }
                     }
                     MeshService.ACTION_MESH_CONNECTED -> {
@@ -643,20 +562,9 @@ class MainActivity : AppCompatActivity(), Logging,
             // We don't start listening for packets until after we are connected to the service
             registerMeshReceiver()
 
-            // Init our messages table with the service's record of past text messages
-            model.messagesState.messages.value = service.oldMessages.map {
-                TextMessage(it)
-            }
-
+            // We won't receive a notify for the initial state of connection, so we force an update here
             val connectionState =
                 MeshService.ConnectionState.valueOf(service.connectionState())
-
-            // if we are not connected, onMeshConnectionChange won't fetch nodes from the service
-            // in that case, we do it here - because the service certainly has a better idea of node db that we have
-            if (connectionState != MeshService.ConnectionState.CONNECTED)
-                updateNodesFromDevice()
-
-            // We won't receive a notify for the initial state of connection, so we force an update here
             onMeshConnectionChanged(connectionState)
 
             debug("connected to mesh service, isConnected=${model.isConnected.value}")
@@ -668,7 +576,7 @@ class MainActivity : AppCompatActivity(), Logging,
         }
     }
 
-    private fun bindMeshService() {
+    fun bindMeshService() {
         debug("Binding to mesh service!")
         // we bind using the well known name, to make sure 3rd party apps could also
         if (model.meshService != null)
@@ -680,13 +588,15 @@ class MainActivity : AppCompatActivity(), Logging,
         }
     }
 
-    private fun unbindMeshService() {
+    fun unbindMeshService() {
         // If we have received the service, and hence registered with
         // it, then now is the time to unregister.
         // if we never connected, do nothing
-        debug("Unbinding from mesh service!")
-        mesh.close()
-        model.meshService = null
+        mesh?.let {
+            debug("Unbinding from mesh service!")
+            it.close()
+            model.meshService = null
+        }
     }
 
     override fun onStop() {
@@ -698,15 +608,6 @@ class MainActivity : AppCompatActivity(), Logging,
 
     override fun onStart() {
         super.onStart()
-
-        // Ensures Bluetooth is available on the device and it is enabled. If not,
-        // displays a dialog requesting user permission to enable Bluetooth.
-        if (!isInTestLab) {
-            bluetoothAdapter?.takeIf { !it.isEnabled }?.apply {
-                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT)
-            }
-        }
 
         bindMeshService()
 
