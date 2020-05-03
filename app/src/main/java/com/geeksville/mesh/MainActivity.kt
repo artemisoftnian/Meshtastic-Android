@@ -238,7 +238,7 @@ class MainActivity : AppCompatActivity(), Logging,
             m.sendData(
                 "+16508675310",
                 testPayload,
-                MeshProtos.Data.Type.SIGNAL_OPAQUE_VALUE
+                MeshProtos.Data.Type.OPAQUE_VALUE
             )
             m.sendData(
                 "+16508675310",
@@ -584,7 +584,7 @@ class MainActivity : AppCompatActivity(), Logging,
 
         MeshService.startService(this)?.let { intent ->
             // ALSO bind so we can use the api
-            mesh.connect(this, intent, Context.BIND_AUTO_CREATE)
+            mesh.connect(this, intent, Context.BIND_AUTO_CREATE + Context.BIND_ABOVE_CLIENT)
         }
     }
 
