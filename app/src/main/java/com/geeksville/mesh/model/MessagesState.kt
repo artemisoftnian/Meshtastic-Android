@@ -4,6 +4,7 @@ import android.os.RemoteException
 import androidx.lifecycle.MutableLiveData
 import com.geeksville.android.BuildUtils.isEmulator
 import com.geeksville.android.Logging
+<<<<<<< HEAD
 import com.geeksville.mesh.MeshProtos
 import com.geeksville.mesh.utf8
 import java.util.*
@@ -19,15 +20,19 @@ data class TextMessage(
     val date: Date = Date(),
     val errorMessage: String? = null
 )
+=======
+import com.geeksville.mesh.DataPacket
+import com.geeksville.mesh.MessageStatus
+>>>>>>> upstream/master
 
 
 class MessagesState(private val ui: UIViewModel) : Logging {
     private val testTexts = listOf(
-        TextMessage(
+        DataPacket(
             "+16508765310",
             "I found the cache"
         ),
-        TextMessage(
+        DataPacket(
             "+16508765311",
             "Help! I've fallen and I can't get up."
         )
@@ -36,38 +41,64 @@ class MessagesState(private val ui: UIViewModel) : Logging {
     // If the following (unused otherwise) line is commented out, the IDE preview window works.
     // if left in the preview always renders as empty.
     val messages =
-        object : MutableLiveData<List<TextMessage>>(if (isEmulator) testTexts else listOf()) {
+        object : MutableLiveData<List<DataPacket>>(if (isEmulator) testTexts else emptyList()) {
 
         }
 
     /// add a message our GUI list of past msgs
+<<<<<<< HEAD
     fun addMessage(m: TextMessage) {
         messages.value = messages.value!! + m
     }
 
+=======
+    fun addMessage(m: DataPacket) {
+        debug("Adding message to view id=${m.id}")
+        // FIXME - don't just slam in a new list each time, it probably causes extra drawing.
+
+        // FIXME - possible kotlin bug in 1.3.72 - it seems that if we start with the (globally shared) emptyList,
+        // then adding items are affecting that shared list rather than a copy.   This was causing aliasing of
+        // recentDataPackets with messages.value in the GUI.  So if the current list is empty we are careful to make a new list
+        messages.value = if (messages.value.isNullOrEmpty())
+            listOf(m)
+        else
+            messages.value!! + m
+    }
+
+    fun updateStatus(id: Int, status: MessageStatus) {
+        // Super inefficent but this is rare
+        debug("Handling message status change $id: $status")
+        val msgs = messages.value!!
+
+        msgs.find { it.id == id }?.let { p ->
+            // Note: it seems that the service is keeping only a reference to our original packet (so it has already updated p.status)
+            // This seems to be an AIDL optimization when both the service and the client are in the same process.  But we still want to trigger
+            // a GUI update
+            // if (p.status != status) {
+            p.status = status
+            // Trigger an expensive complete redraw FIXME
+            messages.value = msgs
+            // }
+        }
+    }
+
+>>>>>>> upstream/master
     /// Send a message and added it to our GUI log
-    fun sendMessage(str: String, dest: String? = null) {
-        var error: String? = null
+    fun sendMessage(str: String, dest: String = DataPacket.ID_BROADCAST) {
+
         val service = ui.meshService
+        val p = DataPacket(dest, str)
+
         if (service != null)
             try {
-                service.sendData(
-                    dest,
-                    str.toByteArray(utf8),
-                    MeshProtos.Data.Type.CLEAR_TEXT_VALUE
-                )
+                service.send(p)
             } catch (ex: RemoteException) {
-                error = "Error: ${ex.message}"
+                p.errorMessage = "Error: ${ex.message}"
             }
         else
-            error = "Error: No Mesh service"
+            p.errorMessage = "Error: No Mesh service"
 
-        addMessage(
-            TextMessage(
-                ui.nodeDB.myId.value!!,
-                str,
-                errorMessage = error
-            )
-        )
+        // FIXME - why is the first time we are called p is already in the list at this point?
+        addMessage(p)
     }
 }

@@ -4,6 +4,7 @@ import android.os.Parcel
 import android.os.Parcelable
 import com.geeksville.mesh.ui.bearing
 import com.geeksville.mesh.ui.latLongToMeter
+<<<<<<< HEAD
 
 
 /**
@@ -45,9 +46,24 @@ data class MeshUser(val id: String, val longName: String, val shortName: String)
             return arrayOfNulls(size)
         }
     }
+=======
+import com.geeksville.util.anonymize
+import kotlinx.android.parcel.Parcelize
+import kotlinx.serialization.Serializable
+
+
+//
+// model objects that directly map to the corresponding protobufs
+//
+
+@Serializable
+@Parcelize
+data class MeshUser(val id: String, val longName: String, val shortName: String) :
+    Parcelable {
+>>>>>>> upstream/master
 
     override fun toString(): String {
-        return "MeshUser(id=${id.anonymized}, longName=${longName.anonymized}, shortName=${shortName.anonymized})"
+        return "MeshUser(id=${id.anonymize}, longName=${longName.anonymize}, shortName=${shortName.anonymize})"
     }
 }
 
@@ -94,7 +110,7 @@ data class Position(
     }
 
     override fun toString(): String {
-        return "Position(lat=${latitude.anonymized}, lon=${longitude.anonymized}, alt=${altitude.anonymized}, time=${time})"
+        return "Position(lat=${latitude.anonymize}, lon=${longitude.anonymize}, alt=${altitude.anonymize}, time=${time})"
     }
 }
 

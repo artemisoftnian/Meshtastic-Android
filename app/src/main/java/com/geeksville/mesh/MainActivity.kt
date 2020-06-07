@@ -27,7 +27,6 @@ import com.geeksville.android.GeeksvilleApplication
 import com.geeksville.android.Logging
 import com.geeksville.android.ServiceClient
 import com.geeksville.mesh.model.Channel
-import com.geeksville.mesh.model.TextMessage
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.service.*
 import com.geeksville.mesh.ui.*
@@ -235,15 +234,19 @@ class MainActivity : AppCompatActivity(), Logging,
 
             // Do some test operations
             val testPayload = "hello world".toByteArray()
-            m.sendData(
-                "+16508675310",
-                testPayload,
-                MeshProtos.Data.Type.OPAQUE_VALUE
+            m.send(
+                DataPacket(
+                    "+16508675310",
+                    testPayload,
+                    MeshProtos.Data.Type.OPAQUE_VALUE
+                )
             )
-            m.sendData(
-                "+16508675310",
-                testPayload,
-                MeshProtos.Data.Type.CLEAR_TEXT_VALUE
+            m.send(
+                DataPacket(
+                    "+16508675310",
+                    testPayload,
+                    MeshProtos.Data.Type.CLEAR_TEXT_VALUE
+                )
             )
         }
     }
@@ -340,7 +343,7 @@ class MainActivity : AppCompatActivity(), Logging,
                 MeshService.ConnectionState.DISCONNECTED -> R.drawable.cloud_off
             }
 
-            connectStatusImage.setImageDrawable(getDrawable(image))
+            connectStatusImage.setImageResource(image)
         })
 
         askToRate()
@@ -420,6 +423,7 @@ class MainActivity : AppCompatActivity(), Logging,
         filter.addAction(MeshService.ACTION_MESH_CONNECTED)
         filter.addAction(MeshService.ACTION_NODE_CHANGE)
         filter.addAction(MeshService.ACTION_RECEIVED_DATA)
+        filter.addAction((MeshService.ACTION_MESSAGE_STATUS))
         registerReceiver(meshServiceReceiver, filter)
         receiverRegistered = true;
     }
@@ -451,10 +455,27 @@ class MainActivity : AppCompatActivity(), Logging,
                     it.user?.id!! to it
                 }.toMap()
 
+<<<<<<< HEAD
                 model.nodeDB.nodes.value = nodes
 
                 // Pull down our real node ID - This must be done AFTER reading the nodedb because we need the DB to find our nodeinof object
                 model.nodeDB.myId.value = service.myId
+=======
+                val info = service.myNodeInfo
+                model.myNodeInfo.value = info
+
+                val isOld = info.minAppVersion > BuildConfig.VERSION_CODE
+                if (isOld)
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle(getString(R.string.app_too_old))
+                        .setMessage(getString(R.string.must_update))
+                        .setPositiveButton("Okay") { _, _ ->
+                            info("User acknowledged app is old")
+                        }
+                        .show()
+
+                updateNodesFromDevice()
+>>>>>>> upstream/master
 
                 // we have a connection to our device now, do the channel change
                 perhapsChangeChannel()
@@ -536,6 +557,15 @@ class MainActivity : AppCompatActivity(), Logging,
                             else -> TODO()
                         }
                     }
+
+                    MeshService.ACTION_MESSAGE_STATUS -> {
+                        debug("received message status from service")
+                        val id = intent.getIntExtra(EXTRA_PACKET_ID, 0)
+                        val status = intent.getParcelableExtra<MessageStatus>(EXTRA_STATUS)
+
+                        model.messagesState.updateStatus(id, status)
+                    }
+
                     MeshService.ACTION_MESH_CONNECTED -> {
                         val connected =
                             MeshService.ConnectionState.valueOf(
@@ -562,7 +592,12 @@ class MainActivity : AppCompatActivity(), Logging,
             // We don't start listening for packets until after we are connected to the service
             registerMeshReceiver()
 
+<<<<<<< HEAD
             // We won't receive a notify for the initial state of connection, so we force an update here
+=======
+            // Init our messages table with the service's record of past text messages
+            model.messagesState.messages.value = service.oldMessages
+>>>>>>> upstream/master
             val connectionState =
                 MeshService.ConnectionState.valueOf(service.connectionState())
             onMeshConnectionChanged(connectionState)
@@ -582,10 +617,10 @@ class MainActivity : AppCompatActivity(), Logging,
         if (model.meshService != null)
             Exceptions.reportError("meshService was supposed to be null, ignoring (but reporting a bug)")
 
-        MeshService.startService(this)?.let { intent ->
-            // ALSO bind so we can use the api
-            mesh.connect(this, intent, Context.BIND_AUTO_CREATE + Context.BIND_ABOVE_CLIENT)
-        }
+        MeshService.startService(this) // Start the service so it stays running even after we unbind
+
+        // ALSO bind so we can use the api
+        mesh.connect(this, MeshService.intent, Context.BIND_AUTO_CREATE + Context.BIND_ABOVE_CLIENT)
     }
 
     fun unbindMeshService() {

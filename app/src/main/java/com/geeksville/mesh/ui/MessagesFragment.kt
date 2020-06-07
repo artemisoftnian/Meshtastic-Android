@@ -6,17 +6,26 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.ImageView
+import android.widget.TextView
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.geeksville.android.Logging
+import com.geeksville.mesh.DataPacket
+import com.geeksville.mesh.MessageStatus
 import com.geeksville.mesh.R
-import com.geeksville.mesh.model.TextMessage
 import com.geeksville.mesh.model.UIViewModel
+<<<<<<< HEAD
+=======
+import com.geeksville.mesh.service.MeshService
+import com.google.android.material.chip.Chip
+>>>>>>> upstream/master
 import kotlinx.android.synthetic.main.adapter_message_layout.view.*
 import kotlinx.android.synthetic.main.messages_fragment.*
 import java.text.SimpleDateFormat
+import java.util.*
 
 // Allows usage like email.on(EditorInfo.IME_ACTION_NEXT, { confirm() })
 fun EditText.on(actionId: Int, func: () -> Unit) {
@@ -37,9 +46,10 @@ class MessagesFragment : ScreenFragment("Messages"), Logging {
     // Provide a direct reference to each of the views within a data item
     // Used to cache the views within the item layout for fast access
     class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
-        val username = itemView.username
-        val messageText = itemView.messageText
-        val messageTime = itemView.messageTime
+        val username: Chip = itemView.username
+        val messageText: TextView = itemView.messageText
+        val messageTime: TextView = itemView.messageTime
+        val messageStatusIcon: ImageView = itemView.messageStatusIcon
     }
 
     private val messagesAdapter = object : RecyclerView.Adapter<ViewHolder>() {
@@ -124,18 +134,33 @@ class MessagesFragment : ScreenFragment("Messages"), Logging {
                 holder.messageText.text = msg.text
             }
 
-            holder.messageTime.text = dateFormat.format(msg.date)
+            holder.messageTime.text = dateFormat.format(Date(msg.time))
+
+            val icon = when (msg.status) {
+                MessageStatus.QUEUED -> R.drawable.ic_twotone_cloud_upload_24
+                MessageStatus.DELIVERED -> R.drawable.cloud_on
+                MessageStatus.ENROUTE -> R.drawable.ic_twotone_cloud_24
+                MessageStatus.ERROR -> R.drawable.cloud_off
+                else -> null
+            }
+
+            if (icon != null) {
+                holder.messageStatusIcon.setImageResource(icon)
+                holder.messageStatusIcon.visibility = View.VISIBLE
+            } else
+                holder.messageStatusIcon.visibility = View.INVISIBLE
         }
 
-        private var messages = arrayOf<TextMessage>()
+        private var messages = arrayOf<DataPacket>()
 
         /// Called when our node DB changes
-        fun onMessagesChanged(nodesIn: Collection<TextMessage>) {
-            messages = nodesIn.toTypedArray()
+        fun onMessagesChanged(msgIn: Collection<DataPacket>) {
+            messages = msgIn.toTypedArray()
             notifyDataSetChanged() // FIXME, this is super expensive and redraws all messages
 
             // scroll to the last line
-            messageListView.scrollToPosition(this.itemCount - 1)
+            if (itemCount != 0)
+                messageListView.scrollToPosition(itemCount - 1)
         }
     }
 
@@ -152,8 +177,9 @@ class MessagesFragment : ScreenFragment("Messages"), Logging {
         messageInputText.on(EditorInfo.IME_ACTION_DONE) {
             debug("did IME action")
 
-            val str = messageInputText.text.toString()
-            model.messagesState.sendMessage(str)
+            val str = messageInputText.text.toString().trim()
+            if (str.isNotEmpty())
+                model.messagesState.sendMessage(str)
             messageInputText.setText("") // blow away the string the user just entered
 
             // requireActivity().hideKeyboard()

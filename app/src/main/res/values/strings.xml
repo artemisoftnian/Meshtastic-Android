@@ -41,4 +41,27 @@
     <string name="report_a_bug">Report a bug</string>
     <string name="report_bug_text">Are you sure you want to report a bug? After reporting, please post in meshtastic.discourse.group so we can match up the report with what you found.</string>
     <string name="report">Report</string>
+<<<<<<< HEAD
+=======
+    <string name="select_radio">Select radio</string>
+    <string name="current_pair">You are currently paired with radio %s</string>
+    <string name="not_paired_yet">You have not paired a radio yet.</string>
+    <string name="change_radio">Change radio</string>
+    <string name="please_pair">Please pair device in Android Settings.</string>
+    <string name="pairing_completed">Pairing completed, starting service</string>
+    <string name="pairing_failed_try_again">Pairing failed, please select again</string>
+    <string name="location_disabled">Location access is disabled, can not provide position to the mesh.</string>
+    <string name="share">Share</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="device_sleeping">Device sleeping</string>
+    <string name="connected_count">Connected: %s of %s online</string>
+    <string name="list_of_nodes">A list of nodes in the network</string>
+    <string name="update_firmware">Update Firmware</string>
+    <string name="connected_to">Connected to radio (%s)</string>
+    <string name="not_connected">Not connected, select radio below</string>
+    <string name="connected_sleeping">Connected to radio, but it is sleeping</string>
+    <string name="update_to">Update to %s</string>
+    <string name="app_too_old">Application too old</string>
+    <string name="must_update">You must update this application on the Google Play store (or Github). It is too old to talk to this radio.</string>
+>>>>>>> upstream/master
 </resources>
